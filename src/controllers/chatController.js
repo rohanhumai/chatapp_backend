@@ -1,16 +1,26 @@
+// Message model (MongoDB me stored permanent messages)
 const Message = require("../models/Message");
+
+// Conversation model (participants aur unread count track karta hai)
 const Conversation = require("../models/Conversation");
+
+// Redis client getter
 const { getRedisClient } = require("../config/redis");
 
 exports.getMessages = async (req, res) => {
   try {
+    // route params se conversationId
     const { conversationId } = req.params;
+
+    // query params se pagination (default values set)
     const { page = 1, limit = 50 } = req.query;
 
+    // skip calculate kar rahe hain pagination ke liye
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
-    // Verify user is part of the conversation
+    // conversation fetch kar rahe hain
     const conversation = await Conversation.findById(conversationId);
+
     if (!conversation) {
       return res.status(404).json({
         success: false,
@@ -18,6 +28,7 @@ exports.getMessages = async (req, res) => {
       });
     }
 
+    // check kar rahe hain user participant hai ya nahi
     const isParticipant = conversation.participants.some(
       (p) => p.toString() === req.userId,
     );
@@ -29,27 +40,32 @@ exports.getMessages = async (req, res) => {
       });
     }
 
-    // First, check Redis for recent messages
+    // Redis client le rahe hain
     const redis = getRedisClient();
+
+    // Redis se recent (pending) messages fetch
     const redisMessages = await redis.lrange(
       `messages:${conversationId}`,
       0,
       -1,
     );
+
+    // JSON parse karke usable objects bana rahe hain
     const pendingMessages = redisMessages.map((msg) => JSON.parse(msg));
 
-    // Get messages from MongoDB
+    // MongoDB se permanent messages fetch
     const dbMessages = await Message.find({ conversationId })
-      .sort({ createdAt: -1 })
+      .sort({ createdAt: -1 }) // latest first
       .skip(skip)
       .limit(parseInt(limit))
-      .lean();
+      .lean(); // plain JS object (faster)
 
-    // Merge and deduplicate
+    // deduplication ke liye Set
     const allMessageIds = new Set();
+
     const allMessages = [];
 
-    // Add pending messages first (most recent)
+    // pehle pending (Redis) messages add
     for (const msg of pendingMessages) {
       if (!allMessageIds.has(msg.messageId)) {
         allMessageIds.add(msg.messageId);
@@ -57,7 +73,7 @@ exports.getMessages = async (req, res) => {
       }
     }
 
-    // Add DB messages
+    // phir DB messages add
     for (const msg of dbMessages) {
       if (!allMessageIds.has(msg.messageId)) {
         allMessageIds.add(msg.messageId);
@@ -65,14 +81,19 @@ exports.getMessages = async (req, res) => {
       }
     }
 
-    // Sort by timestamp
+    // final sorting chronological order me
     allMessages.sort((a, b) => {
       const timeA = new Date(a.timestamp || a.createdAt);
+
       const timeB = new Date(b.timestamp || b.createdAt);
-      return timeA - timeB;
+
+      return timeA - timeB; // oldest → newest
     });
 
-    const totalCount = await Message.countDocuments({ conversationId });
+    // total permanent message count
+    const totalCount = await Message.countDocuments({
+      conversationId,
+    });
 
     res.json({
       success: true,
@@ -88,6 +109,7 @@ exports.getMessages = async (req, res) => {
     });
   } catch (error) {
     console.error("Get messages error:", error);
+
     res.status(500).json({
       success: false,
       message: "Failed to get messages.",
@@ -98,8 +120,10 @@ exports.getMessages = async (req, res) => {
 exports.markAsRead = async (req, res) => {
   try {
     const { conversationId } = req.params;
+
     const { messageIds } = req.body;
 
+    // validation
     if (!messageIds || !Array.isArray(messageIds)) {
       return res.status(400).json({
         success: false,
@@ -107,6 +131,7 @@ exports.markAsRead = async (req, res) => {
       });
     }
 
+    // MongoDB me status update
     await Message.updateMany(
       {
         messageId: { $in: messageIds },
@@ -118,7 +143,7 @@ exports.markAsRead = async (req, res) => {
       },
     );
 
-    // Reset unread count
+    // unread count reset kar rahe hain
     await Conversation.findByIdAndUpdate(conversationId, {
       [`unreadCount.${req.userId}`]: 0,
     });
@@ -129,6 +154,7 @@ exports.markAsRead = async (req, res) => {
     });
   } catch (error) {
     console.error("Mark as read error:", error);
+
     res.status(500).json({
       success: false,
       message: "Failed to mark messages as read.",
