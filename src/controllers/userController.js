@@ -1,9 +1,12 @@
+// User model import
 const User = require("../models/User");
 
 exports.searchUsers = async (req, res) => {
   try {
+    // query parameter se search string le rahe hain
     const { q } = req.query;
 
+    // basic validation (minimum 2 characters required)
     if (!q || q.trim().length < 2) {
       return res.status(400).json({
         success: false,
@@ -11,15 +14,24 @@ exports.searchUsers = async (req, res) => {
       });
     }
 
+    // MongoDB query:
     const users = await User.find({
+      // current user ko exclude kar rahe hain
       _id: { $ne: req.userId },
+
+      // username ya email me case-insensitive regex match
       $or: [
         { username: { $regex: q.trim(), $options: "i" } },
         { email: { $regex: q.trim(), $options: "i" } },
       ],
     })
+      // sirf required fields select kar rahe hain (sensitive data avoid)
       .select("username email avatar isOnline lastSeen publicKey")
+
+      // max 20 results (basic rate control)
       .limit(20)
+
+      // plain JS object (performance optimized)
       .lean();
 
     res.json({
@@ -28,6 +40,7 @@ exports.searchUsers = async (req, res) => {
     });
   } catch (error) {
     console.error("Search users error:", error);
+
     res.status(500).json({
       success: false,
       message: "Failed to search users.",
@@ -37,8 +50,10 @@ exports.searchUsers = async (req, res) => {
 
 exports.getUserProfile = async (req, res) => {
   try {
+    // URL params se user id le rahe hain
     const { id } = req.params;
 
+    // user fetch kar rahe hain selected fields ke saath
     const user = await User.findById(id)
       .select("username email avatar isOnline lastSeen publicKey")
       .lean();
@@ -56,6 +71,7 @@ exports.getUserProfile = async (req, res) => {
     });
   } catch (error) {
     console.error("Get user profile error:", error);
+
     res.status(500).json({
       success: false,
       message: "Failed to get user profile.",
@@ -67,6 +83,7 @@ exports.getPublicKey = async (req, res) => {
   try {
     const { id } = req.params;
 
+    // sirf publicKey aur username fetch kar rahe hain
     const user = await User.findById(id).select("publicKey username").lean();
 
     if (!user) {
@@ -86,6 +103,7 @@ exports.getPublicKey = async (req, res) => {
     });
   } catch (error) {
     console.error("Get public key error:", error);
+
     res.status(500).json({
       success: false,
       message: "Failed to get public key.",
