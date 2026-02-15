@@ -1,84 +1,110 @@
+// socket.io Server class import kar rahe hain
 const { Server } = require("socket.io");
+
+// JWT token verify karne ke liye jsonwebtoken import
 const jwt = require("jsonwebtoken");
+
+// Redis client getter function import
 const { getRedisClient } = require("./redis");
+
+// Redis me temporarily stored messages ko MongoDB me flush karne wala service
 const { flushMessagesToDB } = require("../services/redisService");
+
+// User model MongoDB se user fetch karne ke liye
 const User = require("../models/User");
 
+// io instance initially null (later initialize hoga)
 let io = null;
+
+// online users track karne ke liye Map (userId -> socketId)
 const onlineUsers = new Map();
 
+// function jo socket server initialize karega
 const initializeSocket = (server) => {
+  // new Socket.io server create kar rahe hain existing HTTP server ke upar
   io = new Server(server, {
     cors: {
-      origin: process.env.CLIENT_URL,
-      methods: ["GET", "POST"],
-      credentials: true,
+      origin: process.env.CLIENT_URL, // frontend URL allow kar rahe hain
+      methods: ["GET", "POST"], // allowed HTTP methods
+      credentials: true, // cookies/auth allow karega
     },
-    pingTimeout: 60000,
-    pingInterval: 25000,
-    transports: ["websocket", "polling"],
+    pingTimeout: 60000, // agar 60 sec tak client response nahi kare to disconnect
+    pingInterval: 25000, // har 25 sec me ping bhejega
+    transports: ["websocket", "polling"], // fallback mechanism
   });
 
-  // Authentication middleware
+  // Authentication middleware (har connection pe chalega)
   io.use(async (socket, next) => {
     try {
+      // client se auth token receive kar rahe hain
       const token = socket.handshake.auth.token;
+
       if (!token) {
         return next(new Error("Authentication error: No token provided"));
       }
 
+      // JWT verify kar rahe hain
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+      // user database se fetch kar rahe hain (password exclude karte hue)
       const user = await User.findById(decoded.userId).select("-password");
+
       if (!user) {
         return next(new Error("Authentication error: User not found"));
       }
 
+      // socket object me user info attach kar rahe hain
       socket.userId = decoded.userId;
       socket.user = user;
-      next();
+
+      next(); // authentication successful
     } catch (error) {
       next(new Error("Authentication error: Invalid token"));
     }
   });
 
+  // jab koi client connect karta hai
   io.on("connection", async (socket) => {
     const userId = socket.userId;
     console.log(`User connected: ${userId}`);
 
-    // Track online users
+    // online user map me add kar rahe hain
     onlineUsers.set(userId, socket.id);
 
-    // Update user online status in Redis
+    // Redis client le rahe hain
     const redis = getRedisClient();
+
+    // Redis hash me online status store kar rahe hain
     await redis.hset("online_users", userId, socket.id);
 
-    // Broadcast online status
+    // sabko broadcast kar rahe hain ki user online hai
     io.emit("user_online", { userId, online: true });
 
-    // Send current online users to the connected user
+    // naye connected user ko currently online users bhej rahe hain
     const allOnlineUsers = Array.from(onlineUsers.keys());
     socket.emit("online_users_list", allOnlineUsers);
 
-    // Join user's personal room
+    // user ka personal room create/join karwa rahe hain
     socket.join(`user_${userId}`);
 
-    // Handle joining a conversation
+    // conversation join handler
     socket.on("join_conversation", (conversationId) => {
       socket.join(`conversation_${conversationId}`);
       console.log(`User ${userId} joined conversation ${conversationId}`);
     });
 
-    // Handle leaving a conversation
+    // conversation leave handler
     socket.on("leave_conversation", (conversationId) => {
       socket.leave(`conversation_${conversationId}`);
     });
 
-    // Handle sending messages
+    // message send handler
     socket.on("send_message", async (data) => {
       try {
         const { conversationId, encryptedContent, iv, recipientId, messageId } =
           data;
 
+        // required fields validation
         if (
           !conversationId ||
           !encryptedContent ||
@@ -90,6 +116,7 @@ const initializeSocket = (server) => {
           return;
         }
 
+        // message object create kar rahe hain
         const messageData = {
           messageId,
           conversationId,
@@ -101,26 +128,28 @@ const initializeSocket = (server) => {
           status: "sent",
         };
 
-        // Store in Redis temporarily
+        // Redis list me message temporarily store kar rahe hain
         await redis.lpush(
           `messages:${conversationId}`,
           JSON.stringify(messageData),
         );
+
+        // TTL set kar rahe hain taaki Redis memory leak na kare
         await redis.expire(
           `messages:${conversationId}`,
           parseInt(process.env.REDIS_MESSAGE_TTL) || 300,
         );
 
-        // Increment pending message count
+        // pending messages counter increment
         await redis.incr("pending_messages_count");
 
-        // Emit to conversation room
+        // conversation room me message broadcast
         io.to(`conversation_${conversationId}`).emit(
           "new_message",
           messageData,
         );
 
-        // Send notification to recipient if they're not in the conversation
+        // agar recipient online hai to notification bhejo
         const recipientSocketId = onlineUsers.get(recipientId);
         if (recipientSocketId) {
           io.to(`user_${recipientId}`).emit("message_notification", {
@@ -131,7 +160,7 @@ const initializeSocket = (server) => {
           });
         }
 
-        // Confirm message sent
+        // sender ko confirmation bhej rahe hain
         socket.emit("message_sent", {
           messageId,
           timestamp: messageData.timestamp,
@@ -142,7 +171,7 @@ const initializeSocket = (server) => {
       }
     });
 
-    // Handle typing indicator
+    // typing indicator start
     socket.on("typing_start", ({ conversationId }) => {
       socket.to(`conversation_${conversationId}`).emit("user_typing", {
         userId,
@@ -151,6 +180,7 @@ const initializeSocket = (server) => {
       });
     });
 
+    // typing stop
     socket.on("typing_stop", ({ conversationId }) => {
       socket.to(`conversation_${conversationId}`).emit("user_stopped_typing", {
         userId,
@@ -158,7 +188,7 @@ const initializeSocket = (server) => {
       });
     });
 
-    // Handle message read status
+    // message read event
     socket.on("messages_read", ({ conversationId, messageIds }) => {
       socket.to(`conversation_${conversationId}`).emit("messages_marked_read", {
         conversationId,
@@ -167,7 +197,7 @@ const initializeSocket = (server) => {
       });
     });
 
-    // Handle key exchange for E2E encryption
+    // key exchange event (E2E encryption ke liye public key exchange)
     socket.on("key_exchange", ({ recipientId, publicKey }) => {
       const recipientSocketId = onlineUsers.get(recipientId);
       if (recipientSocketId) {
@@ -178,16 +208,18 @@ const initializeSocket = (server) => {
       }
     });
 
-    // Handle disconnect
+    // disconnect handler
     socket.on("disconnect", async () => {
       console.log(`User disconnected: ${userId}`);
-      onlineUsers.delete(userId);
-      await redis.hdel("online_users", userId);
-      io.emit("user_online", { userId, online: false });
+
+      onlineUsers.delete(userId); // map se remove
+      await redis.hdel("online_users", userId); // Redis se remove
+
+      io.emit("user_online", { userId, online: false }); // broadcast offline
     });
   });
 
-  // Periodic flush from Redis to MongoDB
+  // periodic job jo Redis ke messages MongoDB me flush karega
   const flushInterval = setInterval(
     async () => {
       try {
@@ -199,13 +231,14 @@ const initializeSocket = (server) => {
     parseInt(process.env.REDIS_FLUSH_INTERVAL) || 30000,
   );
 
-  // Cleanup on server close
+  // server close hone par interval cleanup
   process.on("SIGTERM", () => clearInterval(flushInterval));
   process.on("SIGINT", () => clearInterval(flushInterval));
 
   return io;
 };
 
+// existing io instance getter
 const getIO = () => {
   if (!io) {
     throw new Error("Socket.io not initialized");
@@ -213,6 +246,8 @@ const getIO = () => {
   return io;
 };
 
+// online users map getter
 const getOnlineUsers = () => onlineUsers;
 
+// exports
 module.exports = { initializeSocket, getIO, getOnlineUsers };
