@@ -1,12 +1,22 @@
+// JWT library token generate aur verify karne ke liye
 const jwt = require("jsonwebtoken");
+
+// validator email validation ke liye
 const validator = require("validator");
+
+// User model import
 const User = require("../models/User");
 
+// function jo access aur refresh tokens generate karega
 const generateTokens = (userId) => {
-  const accessToken = jwt.sign({ userId }, process.env.JWT_SECRET, {
-    expiresIn: "7d",
-  });
+  // short-lived access token (API access ke liye)
+  const accessToken = jwt.sign(
+    { userId }, // payload
+    process.env.JWT_SECRET, // secret key
+    { expiresIn: "7d" }, // expiration time
+  );
 
+  // long-lived refresh token (naya access token lene ke liye)
   const refreshToken = jwt.sign({ userId }, process.env.JWT_REFRESH_SECRET, {
     expiresIn: "30d",
   });
@@ -16,9 +26,10 @@ const generateTokens = (userId) => {
 
 exports.register = async (req, res) => {
   try {
+    // request body se fields le rahe hain
     const { username, email, password, publicKey, fingerprint } = req.body;
 
-    // Validation
+    // basic required field validation
     if (!username || !email || !password) {
       return res.status(400).json({
         success: false,
@@ -26,6 +37,7 @@ exports.register = async (req, res) => {
       });
     }
 
+    // email format validation
     if (!validator.isEmail(email)) {
       return res.status(400).json({
         success: false,
@@ -33,6 +45,7 @@ exports.register = async (req, res) => {
       });
     }
 
+    // password length check
     if (password.length < 8) {
       return res.status(400).json({
         success: false,
@@ -40,6 +53,7 @@ exports.register = async (req, res) => {
       });
     }
 
+    // username length validation
     if (username.length < 3 || username.length > 30) {
       return res.status(400).json({
         success: false,
@@ -47,7 +61,7 @@ exports.register = async (req, res) => {
       });
     }
 
-    // Check existing user
+    // existing user check (email ya username pe)
     const existingUser = await User.findOne({
       $or: [{ email: email.toLowerCase() }, { username: username }],
     });
@@ -55,31 +69,34 @@ exports.register = async (req, res) => {
     if (existingUser) {
       const field =
         existingUser.email === email.toLowerCase() ? "email" : "username";
+
       return res.status(409).json({
         success: false,
         message: `A user with this ${field} already exists.`,
       });
     }
 
-    // Create user
+    // naya user create kar rahe hain
     const user = await User.create({
       username,
       email: email.toLowerCase(),
-      password,
+      password, // hashing model middleware me hoga
       publicKey: publicKey || null,
       fingerprint: fingerprint || null,
     });
 
+    // tokens generate
     const { accessToken, refreshToken } = generateTokens(user._id);
 
-    // Set cookie
+    // httpOnly cookie set kar rahe hain (JS se accessible nahi)
     res.cookie("token", accessToken, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
+      secure: process.env.NODE_ENV === "production", // sirf HTTPS pe
       sameSite: "lax",
-      maxAge: 7 * 24 * 60 * 60 * 1000,
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 din
     });
 
+    // success response
     res.status(201).json({
       success: true,
       message: "Registration successful.",
@@ -97,12 +114,15 @@ exports.register = async (req, res) => {
     });
   } catch (error) {
     console.error("Registration error:", error);
+
+    // duplicate key error (MongoDB code 11000)
     if (error.code === 11000) {
       return res.status(409).json({
         success: false,
         message: "Username or email already exists.",
       });
     }
+
     res.status(500).json({
       success: false,
       message: "Registration failed. Please try again.",
@@ -114,6 +134,7 @@ exports.login = async (req, res) => {
   try {
     const { email, password, fingerprint } = req.body;
 
+    // required validation
     if (!email || !password) {
       return res.status(400).json({
         success: false,
@@ -121,6 +142,7 @@ exports.login = async (req, res) => {
       });
     }
 
+    // user fetch with password included
     const user = await User.findOne({ email: email.toLowerCase() }).select(
       "+password",
     );
@@ -132,7 +154,9 @@ exports.login = async (req, res) => {
       });
     }
 
+    // password compare (bcrypt)
     const isPasswordValid = await user.comparePassword(password);
+
     if (!isPasswordValid) {
       return res.status(401).json({
         success: false,
@@ -140,13 +164,13 @@ exports.login = async (req, res) => {
       });
     }
 
-    // Update fingerprint if provided
+    // fingerprint update agar diya gaya
     if (fingerprint) {
       user.fingerprint = fingerprint;
       await user.save();
     }
 
-    // Update online status
+    // online status update
     user.isOnline = true;
     user.lastSeen = new Date();
     await user.save();
@@ -186,13 +210,16 @@ exports.login = async (req, res) => {
 
 exports.logout = async (req, res) => {
   try {
+    // agar authenticated user exist karta hai
     if (req.user) {
       req.user.isOnline = false;
       req.user.lastSeen = new Date();
       await req.user.save();
     }
 
+    // cookie clear kar rahe hain
     res.clearCookie("token");
+
     res.json({
       success: true,
       message: "Logged out successfully.",
@@ -208,6 +235,7 @@ exports.logout = async (req, res) => {
 
 exports.me = async (req, res) => {
   try {
+    // current authenticated user return kar rahe hain
     res.json({
       success: true,
       data: { user: req.user },
@@ -231,10 +259,11 @@ exports.updatePublicKey = async (req, res) => {
       });
     }
 
+    // user ka publicKey update kar rahe hain
     const user = await User.findByIdAndUpdate(
       req.userId,
       { publicKey },
-      { new: true },
+      { new: true }, // updated document return karega
     );
 
     res.json({
@@ -261,7 +290,9 @@ exports.refreshToken = async (req, res) => {
       });
     }
 
+    // refresh token verify
     const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
+
     const user = await User.findById(decoded.userId);
 
     if (!user) {
@@ -271,6 +302,7 @@ exports.refreshToken = async (req, res) => {
       });
     }
 
+    // naye tokens generate
     const tokens = generateTokens(user._id);
 
     res.cookie("token", tokens.accessToken, {
