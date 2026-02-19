@@ -3,7 +3,6 @@ const User = require("../models/User");
 
 exports.searchUsers = async (req, res) => {
   try {
-    // query parameter se search string le rahe hain
     const { q } = req.query;
 
     // basic validation (minimum 2 characters required)
