@@ -1,3 +1,4 @@
+//[Database]
 // mongoose library ko import kar rahe hain taaki MongoDB se connect kar saken
 const mongoose = require("mongoose");
 
