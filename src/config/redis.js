@@ -1,3 +1,4 @@
+//[REDIS DATABASE]
 // ioredis library ko import kar rahe hain jo Redis server se connect karne ke liye use hoti hai
 const Redis = require("ioredis");
 
