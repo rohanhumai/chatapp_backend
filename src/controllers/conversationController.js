@@ -1,4 +1,4 @@
-// Conversation model (participants, unread count etc.)
+// [Conversation model]
 const Conversation = require("../models/Conversation");
 
 // User model (recipient verify karne ke liye)
